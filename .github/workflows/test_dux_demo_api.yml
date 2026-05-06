@@ -1,0 +1,50 @@
+name: Test DUX Demo API
+
+on:
+  workflow_dispatch:
+    inputs:
+      create_test_pedidos:
+        description: "Crear pedidos de prueba en demo? 0/1"
+        required: true
+        default: "0"
+
+jobs:
+  test-dux-demo-api:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run DUX demo probe
+        env:
+          DUX_TOKEN: ${{ secrets.DUX_TOKEN }}
+
+          # Opcionales. Si no los cargás, el script intenta autodetectar.
+          DUX_ID_EMPRESA: ${{ secrets.DUX_ID_EMPRESA }}
+          DUX_ID_SUCURSAL_EMPRESA: ${{ secrets.DUX_ID_SUCURSAL_EMPRESA }}
+          DUX_ID_DEPOSITO: ${{ secrets.DUX_ID_DEPOSITO }}
+          DUX_ID_LISTA_PRECIO: ${{ secrets.DUX_ID_LISTA_PRECIO }}
+          DUX_CODIGO_ITEM: ${{ secrets.DUX_CODIGO_ITEM }}
+
+          # Para pruebas de precio/descuento en pedido
+          DUX_TEST_FINAL_PRICE: ${{ secrets.DUX_TEST_FINAL_PRICE }}
+          DUX_TEST_DISCOUNT: "10"
+
+          DUX_CREATE_TEST_PEDIDOS: ${{ github.event.inputs.create_test_pedidos }}
+
+        run: python dux_api_demo_probe.py
+
+      - name: Upload DUX debug artifact
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: dux-demo-probe-results
+          path: dux_demo_probe_results.json
