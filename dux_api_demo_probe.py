@@ -32,6 +32,14 @@ DUX_PREFERRED_CODIGO_ITEM = os.getenv("DUX_PREFERRED_CODIGO_ITEM", "000000000000
 DUX_PREFERRED_ID_DEPOSITO = os.getenv("DUX_PREFERRED_ID_DEPOSITO", "15998").strip()
 DUX_REQUIRE_STOCK_FOR_TEST_ITEM = os.getenv("DUX_REQUIRE_STOCK_FOR_TEST_ITEM", "1").strip() == "1"
 
+# Exploración de pedidos existentes para descubrir la estructura real de productos.
+# No crea nada: solo lista pedidos y prueba endpoints de detalle.
+PROBE_EXISTING_ORDERS = os.getenv("DUX_PROBE_EXISTING_ORDERS", "1").strip() == "1"
+DUX_EXISTING_ORDER_ID = os.getenv("DUX_EXISTING_ORDER_ID", "").strip()
+EXISTING_ORDERS_LIMIT = int(os.getenv("DUX_EXISTING_ORDERS_LIMIT", "20"))
+ORDER_DETAIL_PROBE_LIMIT = int(os.getenv("DUX_ORDER_DETAIL_PROBE_LIMIT", "1"))
+ORDER_LOOKBACK_DAYS = int(os.getenv("DUX_ORDER_LOOKBACK_DAYS", "365"))
+
 # En demo lo podés poner en 1 para crear pedidos.
 CREATE_TEST_PEDIDOS = os.getenv("DUX_CREATE_TEST_PEDIDOS", "0").strip() == "1"
 
@@ -676,6 +684,139 @@ def consult_recent_orders(id_empresa: Any, id_sucursal: Any) -> Dict[str, Any]:
     return request_dux("GET", "/pedidos", params=params)
 
 
+def consult_existing_orders(id_empresa: Any, id_sucursal: Any) -> Dict[str, Any]:
+    """
+    Lista pedidos existentes, sin filtrar por CLIENTE DEMO API.
+    Esto sirve para usar pedidos reales del sistema como molde y ver cómo DUX
+    representa productos, precios, descuentos e ids internos.
+    """
+    today = datetime.now().date()
+    fecha_desde = (today - timedelta(days=ORDER_LOOKBACK_DAYS)).strftime("%Y-%m-%d")
+    fecha_hasta = today.strftime("%Y-%m-%d")
+
+    params = {
+        "offset": 0,
+        "limit": EXISTING_ORDERS_LIMIT,
+        "idEmpresa": id_empresa,
+        "idSucursal": id_sucursal,
+        "fechaDesde": fecha_desde,
+        "fechaHasta": fecha_hasta,
+        "anulados": "false",
+    }
+
+    res = request_dux("GET", "/pedidos", params=params)
+
+    rows = as_list(res.get("response"))
+    log("PEDIDOS EXISTENTES ENCONTRADOS", {
+        "cantidad_parseada": len(rows),
+        "lookback_days": ORDER_LOOKBACK_DAYS,
+        "nota": "Si cantidad_parseada=0, probar aumentando DUX_ORDER_LOOKBACK_DAYS o quitando fechaDesde/fechaHasta.",
+        "primer_pedido": rows[0] if rows else None,
+    })
+
+    return res
+
+
+def extract_order_id(order: Dict[str, Any]) -> Optional[Any]:
+    return extract_id(order, [
+        "idPedido",
+        "id_pedido",
+        "id",
+        "pedido_id",
+        "nroPedido",
+        "nro_pedido",
+        "numeroPedido",
+        "numero_pedido",
+    ])
+
+
+def extract_order_number(order: Dict[str, Any]) -> Optional[Any]:
+    return pick_field(order, [
+        "nro_pedido",
+        "nroPedido",
+        "numero_pedido",
+        "numeroPedido",
+        "pedido",
+        "referencia",
+    ])
+
+
+def probe_order_detail(order_id: Any) -> Dict[str, Any]:
+    """
+    DUX documenta /pedidos para listar, pero no queda claro el endpoint de detalle.
+    Esta función prueba variantes típicas y deja todo en el log/artifact.
+    Los errores 404/400 no cortan la corrida.
+    """
+    paths: List[Tuple[str, Optional[Dict[str, Any]]]] = [
+        ("/pedido", {"idPedido": order_id}),
+        ("/pedido", {"id_pedido": order_id}),
+        ("/pedido", {"id": order_id}),
+        ("/pedidos", {"idPedido": order_id}),
+        ("/pedidos", {"id_pedido": order_id}),
+        ("/pedidos", {"id": order_id}),
+        ("/pedido/detalle", {"idPedido": order_id}),
+        ("/pedido/detalle", {"id_pedido": order_id}),
+        ("/pedido/detalle", {"id": order_id}),
+        (f"/pedido/{order_id}", None),
+        (f"/pedidos/{order_id}", None),
+    ]
+
+    results: Dict[str, Any] = {}
+    for path, params in paths:
+        key = f"GET {path} params={params}"
+        try:
+            results[key] = request_dux("GET", path, params=params, allow_error=True)
+        except Exception as e:
+            results[key] = {"exception": str(e)}
+
+    log("PROBE DETALLE PEDIDO EXISTENTE", {
+        "order_id": order_id,
+        "resultados": results,
+    })
+    return results
+
+
+def probe_existing_orders(id_empresa: Any, id_sucursal: Any) -> Dict[str, Any]:
+    if not PROBE_EXISTING_ORDERS:
+        log("SKIP PEDIDOS EXISTENTES", "DUX_PROBE_EXISTING_ORDERS no está en 1.")
+        return {}
+
+    out: Dict[str, Any] = {}
+    existing = consult_existing_orders(id_empresa=id_empresa, id_sucursal=id_sucursal)
+    out["listado"] = existing
+
+    rows = as_list(existing.get("response"))
+
+    selected_orders: List[Dict[str, Any]] = []
+    if DUX_EXISTING_ORDER_ID:
+        selected_orders.append({"_forced_order_id": DUX_EXISTING_ORDER_ID})
+    else:
+        selected_orders = rows[:max(0, ORDER_DETAIL_PROBE_LIMIT)]
+
+    detail_results: Dict[str, Any] = {}
+    for idx, order in enumerate(selected_orders, start=1):
+        order_id = order.get("_forced_order_id") if isinstance(order, dict) else None
+        if not order_id and isinstance(order, dict):
+            order_id = extract_order_id(order)
+
+        log("PEDIDO EXISTENTE SELECCIONADO PARA DETALLE", {
+            "idx": idx,
+            "order_id_detectado": order_id,
+            "order_number_detectado": extract_order_number(order) if isinstance(order, dict) else None,
+            "pedido_resumen": order,
+            "nota": "Si order_id_detectado es None, revisar en este JSON cuál es el campo correcto de identificador.",
+        })
+
+        if not order_id:
+            detail_results[f"pedido_{idx}_sin_id"] = {"pedido": order, "error": "No pude detectar id del pedido."}
+            continue
+
+        detail_results[str(order_id)] = probe_order_detail(order_id)
+
+    out["detalle_probe"] = detail_results
+    return out
+
+
 def main() -> None:
     all_results: Dict[str, Any] = {}
 
@@ -685,6 +826,11 @@ def main() -> None:
             "create_test_pedidos": CREATE_TEST_PEDIDOS,
             "create_test_factura": CREATE_TEST_FACTURA,
             "nota": "No se recomienda CREATE_TEST_FACTURA salvo demo totalmente descartable.",
+            "preferred_codigo_item": DUX_PREFERRED_CODIGO_ITEM,
+            "preferred_id_deposito": DUX_PREFERRED_ID_DEPOSITO,
+            "require_stock_for_test_item": DUX_REQUIRE_STOCK_FOR_TEST_ITEM,
+            "probe_existing_orders": PROBE_EXISTING_ORDERS,
+            "existing_order_id_forzado": DUX_EXISTING_ORDER_ID or None,
         })
 
         if CREATE_TEST_FACTURA:
@@ -757,6 +903,11 @@ def main() -> None:
             depositos=depositos,
             codigo_item=codigo_item,
             id_lista=id_lista,
+        )
+
+        all_results["existing_orders_probe"] = probe_existing_orders(
+            id_empresa=id_empresa,
+            id_sucursal=id_sucursal,
         )
 
         all_results["create_test_orders"] = create_test_orders(
