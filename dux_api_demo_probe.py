@@ -27,28 +27,29 @@ DUX_CODIGO_ITEM = os.getenv("DUX_CODIGO_ITEM", "").strip()
 DUX_ID_LISTA_PRECIO = os.getenv("DUX_ID_LISTA_PRECIO", "").strip()
 
 # Valores de prueba recomendados para esta demo DUX.
-# Se pueden pisar desde GitHub Actions env/secrets si cambia el ambiente.
 DUX_PREFERRED_CODIGO_ITEM = os.getenv("DUX_PREFERRED_CODIGO_ITEM", "00000000000029").strip()
 DUX_PREFERRED_ID_DEPOSITO = os.getenv("DUX_PREFERRED_ID_DEPOSITO", "15998").strip()
 DUX_REQUIRE_STOCK_FOR_TEST_ITEM = os.getenv("DUX_REQUIRE_STOCK_FOR_TEST_ITEM", "1").strip() == "1"
 
 # Exploración de pedidos existentes para descubrir la estructura real de productos.
-# No crea nada: solo lista pedidos y prueba endpoints de detalle.
 PROBE_EXISTING_ORDERS = os.getenv("DUX_PROBE_EXISTING_ORDERS", "1").strip() == "1"
 DUX_EXISTING_ORDER_ID = os.getenv("DUX_EXISTING_ORDER_ID", "").strip()
 EXISTING_ORDERS_LIMIT = int(os.getenv("DUX_EXISTING_ORDERS_LIMIT", "20"))
 ORDER_DETAIL_PROBE_LIMIT = int(os.getenv("DUX_ORDER_DETAIL_PROBE_LIMIT", "1"))
 ORDER_LOOKBACK_DAYS = int(os.getenv("DUX_ORDER_LOOKBACK_DAYS", "365"))
 
-# En demo lo podés poner en 1 para crear pedidos.
+# En demo lo podés poner en 1 para crear pedidos. Para leer pedidos existentes, dejar en 0.
 CREATE_TEST_PEDIDOS = os.getenv("DUX_CREATE_TEST_PEDIDOS", "0").strip() == "1"
 
 # Seguridad: no incluyo facturación por defecto.
 CREATE_TEST_FACTURA = os.getenv("DUX_CREATE_TEST_FACTURA", "0").strip() == "1"
 
-# Para probar precio/descuento
+# Para probar precio/descuento.
 TEST_FINAL_PRICE = os.getenv("DUX_TEST_FINAL_PRICE", "").strip()
 TEST_DISCOUNT = os.getenv("DUX_TEST_DISCOUNT", "10").strip()
+TEST_QUANTITY = os.getenv("DUX_TEST_QUANTITY", "1").strip()
+TEST_PORC_IVA = os.getenv("DUX_TEST_PORC_IVA", "21").strip()
+TEST_ID_MONEDA = os.getenv("DUX_TEST_ID_MONEDA", "1").strip()
 
 ARTIFACT_JSON = "dux_demo_probe_results.json"
 
@@ -58,6 +59,15 @@ def safe_int(value: Any) -> Optional[int]:
         if value is None or value == "":
             return None
         return int(value)
+    except Exception:
+        return None
+
+
+def parse_float(value: Any) -> Optional[float]:
+    try:
+        if value is None or value == "":
+            return None
+        return float(str(value).replace(",", "."))
     except Exception:
         return None
 
@@ -159,8 +169,6 @@ def as_list(data: Any) -> List[Dict[str, Any]]:
             value = data.get(key)
             if isinstance(value, list):
                 return [x for x in value if isinstance(x, dict)]
-
-        # Si vino un objeto único
         return [data]
 
     return []
@@ -205,13 +213,7 @@ def extract_codigo_item(obj: Dict[str, Any]) -> Optional[str]:
     return str(value) if value not in [None, ""] else None
 
 
-def extract_price(obj: Dict[str, Any]) -> Optional[Any]:
-    """
-    DUX devuelve el precio dentro de obj["precios"] como una lista:
-      "precios": [{"id": ..., "nombre": ..., "precio": "11340.0"}]
-
-    Dejamos también fallback por si algún endpoint devuelve precio plano.
-    """
+def extract_price(obj: Optional[Dict[str, Any]]) -> Optional[Any]:
     if not obj:
         return None
 
@@ -236,7 +238,9 @@ def extract_price(obj: Dict[str, Any]) -> Optional[Any]:
     ])
 
 
-def extract_stock(obj: Dict[str, Any]) -> Optional[Any]:
+def extract_stock(obj: Optional[Dict[str, Any]]) -> Optional[Any]:
+    if not obj:
+        return None
     return pick_field(obj, [
         "stock",
         "saldoStock",
@@ -247,19 +251,8 @@ def extract_stock(obj: Dict[str, Any]) -> Optional[Any]:
     ])
 
 
-def parse_float(value: Any) -> Optional[float]:
-    try:
-        if value is None or value == "":
-            return None
-        return float(str(value).replace(",", "."))
-    except Exception:
-        return None
-
-
 def item_price_value(obj: Optional[Dict[str, Any]]) -> Optional[float]:
-    if not obj:
-        return None
-    return parse_float(extract_price(obj))
+    return parse_float(extract_price(obj)) if obj else None
 
 
 def item_stock_available_value(obj: Optional[Dict[str, Any]], id_deposito: Optional[Any] = None) -> Optional[float]:
@@ -272,11 +265,8 @@ def item_stock_available_value(obj: Optional[Dict[str, Any]], id_deposito: Optio
         for row in stock:
             if not isinstance(row, dict):
                 continue
-
-            if id_deposito is not None:
-                row_id = row.get("id") or row.get("id_deposito") or row.get("idDeposito")
-                if str(row_id) != str(id_deposito):
-                    continue
+            if id_deposito and str(row.get("id")) != str(id_deposito):
+                continue
 
             for key in ["stock_disponible", "ctd_disponible", "stockDisponible", "disponible", "stock_real"]:
                 value = parse_float(row.get(key))
@@ -335,52 +325,6 @@ def choose_deposito(depositos: List[Dict[str, Any]]) -> Tuple[Optional[Any], Opt
     return None, None, "no_deposito"
 
 
-def choose_test_item(
-    id_lista: Any,
-    id_deposito: Any,
-    items_result: Dict[str, Any],
-) -> Tuple[Dict[str, Any], str]:
-    """
-    Selecciona el producto de prueba evitando el falso positivo del primer item con precio 0/stock 0.
-
-    Orden:
-    1) DUX_CODIGO_ITEM, si está cargado.
-    2) DUX_PREFERRED_CODIGO_ITEM, por defecto 00000000000029.
-    3) Primer item de la respuesta inicial que tenga precio > 0 y, si se exige, stock > 0.
-    """
-    candidates_codes = []
-    if DUX_CODIGO_ITEM:
-        candidates_codes.append(("DUX_CODIGO_ITEM", DUX_CODIGO_ITEM))
-    if DUX_PREFERRED_CODIGO_ITEM and DUX_PREFERRED_CODIGO_ITEM not in [c for _, c in candidates_codes]:
-        candidates_codes.append(("DUX_PREFERRED_CODIGO_ITEM", DUX_PREFERRED_CODIGO_ITEM))
-
-    for source, code in candidates_codes:
-        res = get_items(id_lista=id_lista, id_deposito=id_deposito, codigo_item=code, limit=5)
-        item = first_obj(res)
-        if item and is_valid_test_item(item, id_deposito):
-            return item, source
-
-        log("ITEM PREFERIDO NO VÁLIDO PARA PEDIDO", {
-            "source": source,
-            "codigo_item": code,
-            "encontrado": bool(item),
-            "precio_detectado": extract_price(item) if item else None,
-            "stock_detectado": item_stock_available_value(item, id_deposito) if item else None,
-            "require_stock": DUX_REQUIRE_STOCK_FOR_TEST_ITEM,
-            "nota": "No se usa para pedido porque precio <= 0, no tiene stock o no fue encontrado.",
-        })
-
-    initial_items = as_list(items_result.get("response"))
-    for item in initial_items:
-        if is_valid_test_item(item, id_deposito):
-            return item, "primer_item_valido_precio_stock"
-
-    raise RuntimeError(
-        "No encontré item válido para pedido. Revisar DUX_PREFERRED_CODIGO_ITEM, "
-        "DUX_PREFERRED_ID_DEPOSITO, lista de precios, stock o poner DUX_REQUIRE_STOCK_FOR_TEST_ITEM=0."
-    )
-
-
 def get_basic_resources() -> Dict[str, Any]:
     results = {}
 
@@ -430,7 +374,7 @@ def autodetect_ids(results: Dict[str, Any]) -> Dict[str, Any]:
     lista_id = DUX_ID_LISTA_PRECIO
     listas = as_list(results.get("listas_precio", {}).get("response"))
     if not lista_id and listas:
-        lista_id = extract_id(listas[0], ["idListaPrecio", "id_lista_precio", "idListaPrecioVenta", "id"])
+        lista_id = extract_id(listas[0], ["idListaPrecio", "id_lista_precio", "idListaPrecioVenta", "id_lista_precio_venta", "id"])
         detected["lista_precio_obj"] = listas[0]
 
     detected["id_lista_precio"] = lista_id
@@ -462,12 +406,50 @@ def get_items(
     return request_dux("GET", "/items", params=params)
 
 
+def choose_test_item(
+    id_lista: Any,
+    id_deposito: Any,
+    items_result: Dict[str, Any],
+) -> Tuple[Dict[str, Any], str]:
+    candidates_codes = []
+    if DUX_CODIGO_ITEM:
+        candidates_codes.append(("DUX_CODIGO_ITEM", DUX_CODIGO_ITEM))
+    if DUX_PREFERRED_CODIGO_ITEM and DUX_PREFERRED_CODIGO_ITEM not in [c for _, c in candidates_codes]:
+        candidates_codes.append(("DUX_PREFERRED_CODIGO_ITEM", DUX_PREFERRED_CODIGO_ITEM))
+
+    for source, code in candidates_codes:
+        res = get_items(id_lista=id_lista, id_deposito=id_deposito, codigo_item=code, limit=5)
+        item = first_obj(res)
+        if item and is_valid_test_item(item, id_deposito):
+            return item, source
+
+        log("ITEM PREFERIDO NO VÁLIDO PARA PEDIDO", {
+            "source": source,
+            "codigo_item": code,
+            "encontrado": bool(item),
+            "precio_detectado": extract_price(item) if item else None,
+            "stock_detectado": item_stock_available_value(item, id_deposito) if item else None,
+            "require_stock": DUX_REQUIRE_STOCK_FOR_TEST_ITEM,
+            "nota": "No se usa para pedido porque precio <= 0, no tiene stock o no fue encontrado.",
+        })
+
+    initial_items = as_list(items_result.get("response"))
+    for item in initial_items:
+        if is_valid_test_item(item, id_deposito):
+            return item, "primer_item_valido_precio_stock"
+
+    raise RuntimeError(
+        "No encontré item válido para pedido. Revisar DUX_PREFERRED_CODIGO_ITEM, "
+        "DUX_PREFERRED_ID_DEPOSITO, lista de precios, stock o poner DUX_REQUIRE_STOCK_FOR_TEST_ITEM=0."
+    )
+
+
 def compare_price_lists(lists: List[Dict[str, Any]], codigo_item: str, id_deposito: Optional[Any]) -> Dict[str, Any]:
     out = {}
 
     usable_lists = []
     for l in lists:
-        lid = extract_id(l, ["idListaPrecio", "id_lista_precio", "idListaPrecioVenta", "id"])
+        lid = extract_id(l, ["idListaPrecio", "id_lista_precio", "idListaPrecioVenta", "id_lista_precio_venta", "id"])
         if lid:
             usable_lists.append((lid, l))
 
@@ -512,95 +494,106 @@ def compare_stock_deposits(depositos: List[Dict[str, Any]], codigo_item: str, id
 
 def build_order_product_variants(codigo_item: str, base_price: Optional[float]) -> List[Tuple[str, Dict[str, Any]]]:
     """
-    Pruebas enfocadas en descubrir qué identificador de producto espera DUX
-    dentro de productos[] y si acepta precio/descuento enviado por API.
+    Pruebas de creación de pedido usando la estructura observada al leer pedidos reales.
 
-    Hallazgo previo: DUX parece reconocer el campo "precio" porque respondió
-    "Debe ingresar un precio mayor a cero" cuando precio=0.
-    Por eso ahora probamos precio > 0 y varios nombres posibles para el código.
+    Hallazgo del probe de pedidos existentes:
+      productos[].cod_item
+      productos[].ctd
+      productos[].precio_uni
+      productos[].porc_desc
+      productos[].porc_iva
+      productos[].id_moneda
+      productos[].cotizacion_moneda
+      productos[].cotizacion_dolar
+
+    Objetivo de estas variantes:
+    1) Confirmar que DUX crea pedido con la estructura real.
+    2) Ver si respeta precio custom enviado desde API.
+    3) Ver si aplica descuento explícito por porc_desc.
     """
     variants: List[Tuple[str, Dict[str, Any]]] = []
 
-    try:
-        lista_price = float(base_price) if base_price is not None else 11340.0
-    except Exception:
+    lista_price = parse_float(base_price)
+    if lista_price is None or lista_price <= 0:
         lista_price = 11340.0
 
-    # Si cargás DUX_TEST_FINAL_PRICE como secret, pisa el valor de prueba.
-    # Si no, usamos 10000 para detectar si DUX respeta un precio distinto
-    # al precio de lista del producto 00000000000029 (11340 en la demo).
-    custom_price = float(TEST_FINAL_PRICE) if TEST_FINAL_PRICE else 10000.0
-    discount = float(TEST_DISCOUNT)
+    custom_price = parse_float(TEST_FINAL_PRICE)
+    if custom_price is None or custom_price <= 0:
+        custom_price = 10000.0
+
+    discount = parse_float(TEST_DISCOUNT)
+    if discount is None:
+        discount = 10.0
+
+    quantity = parse_float(TEST_QUANTITY)
+    if quantity is None or quantity <= 0:
+        quantity = 1.0
+
+    porc_iva = parse_float(TEST_PORC_IVA)
+    if porc_iva is None:
+        porc_iva = 21.0
+
+    id_moneda = safe_int(TEST_ID_MONEDA) or 1
+
+    def product_real_shape(precio_uni: float, porc_desc: float = 0.0, as_strings: bool = False) -> Dict[str, Any]:
+        payload: Dict[str, Any] = {
+            "cod_item": codigo_item,
+            "ctd": quantity,
+            "precio_uni": precio_uni,
+            "porc_desc": porc_desc,
+            "porc_iva": porc_iva,
+            "id_moneda": id_moneda,
+            "cotizacion_moneda": 1.0,
+            "cotizacion_dolar": 1.0,
+        }
+
+        if as_strings:
+            for key in ["ctd", "precio_uni", "porc_desc", "porc_iva", "cotizacion_moneda", "cotizacion_dolar"]:
+                payload[key] = str(payload[key])
+        return payload
 
     variants.extend([
         (
-            "cod_item_precio_10000",
+            "realshape_precio_lista_sin_desc",
+            product_real_shape(precio_uni=lista_price, porc_desc=0.0),
+        ),
+        (
+            "realshape_precio_custom_sin_desc",
+            product_real_shape(precio_uni=custom_price, porc_desc=0.0),
+        ),
+        (
+            "realshape_precio_lista_desc_porcentaje",
+            product_real_shape(precio_uni=lista_price, porc_desc=discount),
+        ),
+        (
+            "realshape_precio_custom_desc_porcentaje",
+            product_real_shape(precio_uni=custom_price, porc_desc=discount),
+        ),
+        (
+            "realshape_strings_precio_custom_desc",
+            product_real_shape(precio_uni=custom_price, porc_desc=discount, as_strings=True),
+        ),
+        (
+            "realshape_minimo_precio_custom_desc",
             {
                 "cod_item": codigo_item,
-                "cantidad": 1,
-                "precio": custom_price,
-            }
-        ),
-        (
-            "codigo_item_precio_10000",
-            {
-                "codigo_item": codigo_item,
-                "cantidad": 1,
-                "precio": custom_price,
-            }
-        ),
-        (
-            "codigo_precio_10000",
-            {
-                "codigo": codigo_item,
-                "cantidad": 1,
-                "precio": custom_price,
-            }
-        ),
-        (
-            "id_item_precio_10000",
-            {
-                "id_item": codigo_item,
-                "cantidad": 1,
-                "precio": custom_price,
-            }
-        ),
-        (
-            "cod_item_precio_lista",
-            {
-                "cod_item": codigo_item,
-                "cantidad": 1,
-                "precio": lista_price,
-            }
-        ),
-        (
-            "cod_item_precio_10000_descuento",
-            {
-                "cod_item": codigo_item,
-                "cantidad": 1,
-                "precio": custom_price,
-                "descuento": discount,
-            }
-        ),
-        (
-            "cod_item_precio_10000_porcentaje_descuento",
-            {
-                "cod_item": codigo_item,
-                "cantidad": 1,
-                "precio": custom_price,
-                "porcentaje_descuento": discount,
-            }
-        ),
-        (
-            "cod_item_precio_10000_descuentoPorcentaje",
-            {
-                "cod_item": codigo_item,
-                "cantidad": 1,
-                "precio": custom_price,
-                "descuentoPorcentaje": discount,
-            }
+                "ctd": quantity,
+                "precio_uni": custom_price,
+                "porc_desc": discount,
+            },
         ),
     ])
+
+    log("VARIANTES DE PRODUCTO PARA CREAR PEDIDO", {
+        "codigo_item": codigo_item,
+        "precio_lista_detectado": lista_price,
+        "precio_custom_enviado": custom_price,
+        "descuento_porcentaje_enviado": discount,
+        "cantidad": quantity,
+        "porc_iva": porc_iva,
+        "id_moneda": id_moneda,
+        "variantes": [{"nombre": name, "producto": payload} for name, payload in variants],
+    })
 
     return variants
 
@@ -657,10 +650,7 @@ def create_test_orders(
         )
 
         res = request_dux("POST", "/pedido/nuevopedido", body=order_body)
-        results[name] = {
-            "body": order_body,
-            "result": res,
-        }
+        results[name] = {"body": order_body, "result": res}
 
     return results
 
@@ -685,11 +675,6 @@ def consult_recent_orders(id_empresa: Any, id_sucursal: Any) -> Dict[str, Any]:
 
 
 def consult_existing_orders(id_empresa: Any, id_sucursal: Any) -> Dict[str, Any]:
-    """
-    Lista pedidos existentes, sin filtrar por CLIENTE DEMO API.
-    Esto sirve para usar pedidos reales del sistema como molde y ver cómo DUX
-    representa productos, precios, descuentos e ids internos.
-    """
     today = datetime.now().date()
     fecha_desde = (today - timedelta(days=ORDER_LOOKBACK_DAYS)).strftime("%Y-%m-%d")
     fecha_hasta = today.strftime("%Y-%m-%d")
@@ -744,11 +729,9 @@ def extract_order_number(order: Dict[str, Any]) -> Optional[Any]:
 def probe_order_detail(order_id: Any, id_empresa: Any, id_sucursal: Any) -> Dict[str, Any]:
     """
     DUX documenta /pedidos para listar, pero no queda claro el endpoint de detalle.
-    Esta función prueba variantes típicas y deja todo en el log/artifact.
-    Los errores 404/400 no cortan la corrida.
+    En la corrida anterior, /pedidos?idPedido=... respondió "Debe seleccionar la empresa".
+    Por eso probamos primero variantes con idEmpresa y también con idSucursal.
     """
-    # En la corrida anterior, /pedidos?idPedido=... respondió "Debe seleccionar la empresa".
-    # Por eso probamos primero variantes con idEmpresa y también con idSucursal.
     paths: List[Tuple[str, Optional[Dict[str, Any]]]] = [
         # Variante más probable: mismo endpoint /pedidos, filtrando por empresa + pedido.
         ("/pedidos", {"idEmpresa": id_empresa, "idPedido": order_id}),
@@ -774,7 +757,7 @@ def probe_order_detail(order_id: Any, id_empresa: Any, id_sucursal: Any) -> Dict
         ("/pedido/detalle", {"idEmpresa": id_empresa, "id_pedido": order_id}),
         ("/pedido/detalle", {"idEmpresa": id_empresa, "id": order_id}),
 
-        # Variantes anteriores sin empresa, se dejan al final como control comparativo.
+        # Variantes anteriores sin empresa, al final como control comparativo.
         ("/pedidos", {"idPedido": order_id}),
         ("/pedidos", {"id_pedido": order_id}),
         ("/pedidos", {"id": order_id}),
@@ -834,7 +817,11 @@ def probe_existing_orders(id_empresa: Any, id_sucursal: Any) -> Dict[str, Any]:
             detail_results[f"pedido_{idx}_sin_id"] = {"pedido": order, "error": "No pude detectar id del pedido."}
             continue
 
-        detail_results[str(order_id)] = probe_order_detail(order_id, id_empresa=id_empresa, id_sucursal=id_sucursal)
+        detail_results[str(order_id)] = probe_order_detail(
+            order_id,
+            id_empresa=id_empresa,
+            id_sucursal=id_sucursal,
+        )
 
     out["detalle_probe"] = detail_results
     return out
@@ -883,57 +870,48 @@ def main() -> None:
         if not id_lista:
             raise RuntimeError("No pude detectar id_lista_precio. Cargá DUX_ID_LISTA_PRECIO.")
 
-        # Trae items con la lista/deposito elegidos. Se usa limit 50 para tener margen,
-        # pero el item de pedido se selecciona con choose_test_item(), no con items[0].
-        items_result = get_items(id_lista=id_lista, id_deposito=id_deposito, codigo_item=None, limit=50)
-        all_results["items_result"] = items_result
+        codigo_item = DUX_CODIGO_ITEM
 
-        item, item_source = choose_test_item(
+        items_result = get_items(
             id_lista=id_lista,
             id_deposito=id_deposito,
-            items_result=items_result,
+            codigo_item=codigo_item or None,
+            limit=50,
         )
+        all_results["items_result"] = items_result
 
-        codigo_item = extract_codigo_item(item)
+        item = choose_test_item(id_lista=id_lista, id_deposito=id_deposito, items_result=items_result)
+        item_obj, item_source = item
+
+        codigo_item = extract_codigo_item(item_obj)
         if not codigo_item:
-            raise RuntimeError(
-                "Encontré item pero no pude detectar código de item. Revisar respuesta en artifact."
-            )
+            raise RuntimeError("Encontré item pero no pude detectar código de item. Revisar respuesta en artifact.")
 
-        base_price_raw = extract_price(item)
-        base_price = item_price_value(item)
+        base_price_raw = extract_price(item_obj)
+        try:
+            base_price = float(base_price_raw) if base_price_raw is not None else None
+        except Exception:
+            base_price = None
 
         log("ITEM BASE PARA PRUEBAS", {
             "source": item_source,
             "codigo_item": codigo_item,
             "precio_detectado": base_price_raw,
-            "stock_disponible_detectado": item_stock_available_value(item, id_deposito),
+            "stock_disponible_detectado": item_stock_available_value(item_obj, id_deposito),
             "id_deposito_usado": id_deposito,
             "require_stock": DUX_REQUIRE_STOCK_FOR_TEST_ITEM,
-            "item": item,
+            "item": item_obj,
         })
 
-        listas = as_list(basic["listas_precio"]["response"])
-        depositos = as_list(basic["depositos"]["response"])
+        lists = as_list(basic.get("listas_precio", {}).get("response"))
+        deps = as_list(basic.get("depositos", {}).get("response"))
 
-        all_results["compare_price_lists"] = compare_price_lists(
-            lists=listas,
-            codigo_item=codigo_item,
-            id_deposito=id_deposito,
-        )
+        all_results["compare_price_lists"] = compare_price_lists(lists, codigo_item, id_deposito)
+        all_results["compare_stock_deposits"] = compare_stock_deposits(deps, codigo_item, id_lista)
 
-        all_results["compare_stock_deposits"] = compare_stock_deposits(
-            depositos=depositos,
-            codigo_item=codigo_item,
-            id_lista=id_lista,
-        )
+        all_results["existing_orders_probe"] = probe_existing_orders(id_empresa, id_sucursal)
 
-        all_results["existing_orders_probe"] = probe_existing_orders(
-            id_empresa=id_empresa,
-            id_sucursal=id_sucursal,
-        )
-
-        all_results["create_test_orders"] = create_test_orders(
+        all_results["created_orders"] = create_test_orders(
             id_empresa=id_empresa,
             id_sucursal=id_sucursal,
             id_deposito=id_deposito,
@@ -941,32 +919,36 @@ def main() -> None:
             base_price=base_price,
         )
 
-        all_results["recent_orders"] = consult_recent_orders(
-            id_empresa=id_empresa,
-            id_sucursal=id_sucursal,
-        )
+        all_results["recent_demo_orders"] = consult_recent_orders(id_empresa, id_sucursal)
 
         with open(ARTIFACT_JSON, "w", encoding="utf-8") as f:
             json.dump(all_results, f, ensure_ascii=False, indent=2, default=str)
 
-        log("FIN OK", f"Resultados guardados en {ARTIFACT_JSON}")
+        log("FIN OK", {
+            "artifact": ARTIFACT_JSON,
+            "nota": "Revisar logs y artifact para ver estructura de items, pedidos existentes y respuestas de creación de pedido.",
+        })
 
     except Exception as e:
-        all_results["fatal_error"] = {
+        all_results["fatal_error"] = str(e)
+        all_results["traceback"] = traceback.format_exc()
+
+        try:
+            with open(ARTIFACT_JSON, "w", encoding="utf-8") as f:
+                json.dump(all_results, f, ensure_ascii=False, indent=2, default=str)
+        except Exception:
+            pass
+
+        log("ERROR FATAL", {
             "error": str(e),
             "traceback": traceback.format_exc(),
-        }
-
-        with open(ARTIFACT_JSON, "w", encoding="utf-8") as f:
-            json.dump(all_results, f, ensure_ascii=False, indent=2, default=str)
-
-        log("ERROR GENERAL", all_results["fatal_error"])
+            "artifact": ARTIFACT_JSON,
+        })
         raise
 
 
 if __name__ == "__main__":
     main()
-
 
 
 
