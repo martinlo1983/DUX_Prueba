@@ -233,6 +233,96 @@ def extract_stock(obj: Dict[str, Any]) -> Optional[Any]:
     ])
 
 
+def to_float(value: Any) -> Optional[float]:
+    """
+    Convierte valores numéricos que pueden venir como string desde DUX.
+    Soporta formatos simples tipo "11340.0" y "11.340,00".
+    """
+    try:
+        if value is None or value == "":
+            return None
+        if isinstance(value, (int, float)):
+            return float(value)
+
+        s = str(value).strip()
+        if not s:
+            return None
+
+        # Si viene formato argentino/europeo: 11.340,00
+        if "," in s and "." in s:
+            s = s.replace(".", "").replace(",", ".")
+        elif "," in s:
+            s = s.replace(",", ".")
+
+        return float(s)
+    except Exception:
+        return None
+
+
+def extract_stock_available(obj: Dict[str, Any]) -> Optional[float]:
+    """
+    Intenta detectar stock disponible.
+    DUX normalmente devuelve:
+      "stock": [{"ctd_disponible": "19.0", "stock_disponible": "19.0", ...}]
+    """
+    if not obj:
+        return None
+
+    stock = obj.get("stock")
+    if isinstance(stock, list) and stock:
+        first_stock = stock[0]
+        if isinstance(first_stock, dict):
+            for key in ["ctd_disponible", "stock_disponible", "disponible", "stock_real"]:
+                value = first_stock.get(key)
+                parsed = to_float(value)
+                if parsed is not None:
+                    return parsed
+
+    value = pick_field(obj, [
+        "ctd_disponible",
+        "stock_disponible",
+        "stock",
+        "saldoStock",
+        "saldo_stock",
+        "cantidadStock",
+        "cantidad_stock",
+        "disponible",
+    ])
+    return to_float(value)
+
+
+def find_valid_item_for_order(
+    items_result: Dict[str, Any],
+    require_stock: bool = False,
+) -> Optional[Dict[str, Any]]:
+    """
+    Selecciona un item apto para probar pedidos.
+
+    Antes el script usaba first_obj(items_result), lo cual tomaba el primer item
+    devuelto por DUX aunque tuviera precio 0. En la salida actual eso eligió
+    00000000000019 con precio 0, y por eso la prueba queda contaminada.
+
+    Criterio:
+      - precio detectado > 0 siempre
+      - stock disponible > 0 solo si require_stock=True
+    """
+    rows = as_list(items_result.get("response"))
+
+    for candidate in rows:
+        price = to_float(extract_price(candidate))
+        if price is None or price <= 0:
+            continue
+
+        if require_stock:
+            stock_available = extract_stock_available(candidate)
+            if stock_available is None or stock_available <= 0:
+                continue
+
+        return candidate
+
+    return None
+
+
 def get_basic_resources() -> Dict[str, Any]:
     results = {}
 
@@ -571,14 +661,46 @@ def main() -> None:
         codigo_item = DUX_CODIGO_ITEM
 
         # Trae items con la lista/deposito detectados.
-        items_result = get_items(id_lista=id_lista, id_deposito=id_deposito, codigo_item=codigo_item or None, limit=10)
+        # Si DUX_CODIGO_ITEM está vacío, no usamos el primer item a ciegas:
+        # buscamos uno con precio > 0 para no probar pedidos con un producto inválido.
+        items_result = get_items(
+            id_lista=id_lista,
+            id_deposito=id_deposito,
+            codigo_item=codigo_item or None,
+            limit=50,
+        )
         all_results["items_result"] = items_result
 
-        item = first_obj(items_result)
-        if not item:
-            raise RuntimeError("No encontré items para probar. Revisar datos demo, lista, depósito o filtros.")
+        require_stock = os.getenv("DUX_REQUIRE_STOCK_FOR_TEST_ITEM", "0").strip() == "1"
 
-        if not codigo_item:
+        if codigo_item:
+            # Si el usuario fuerza un código por secret/env, respetamos ese código,
+            # pero validamos que tenga precio mayor a cero.
+            item = first_obj(items_result)
+            if not item:
+                raise RuntimeError(
+                    f"No encontré el item forzado por DUX_CODIGO_ITEM={codigo_item}. "
+                    "Revisar código, lista de precio, depósito o filtros."
+                )
+
+            forced_price = to_float(extract_price(item))
+            if forced_price is None or forced_price <= 0:
+                raise RuntimeError(
+                    f"El item forzado por DUX_CODIGO_ITEM={codigo_item} tiene precio inválido "
+                    f"para la lista/deposito detectados: {extract_price(item)}. "
+                    "Cambiá DUX_CODIGO_ITEM por un producto con precio > 0 o dejalo vacío "
+                    "para que el script lo autodetecte."
+                )
+        else:
+            item = find_valid_item_for_order(items_result, require_stock=require_stock)
+
+            if not item:
+                raise RuntimeError(
+                    "No encontré un item con precio > 0 para probar. "
+                    "Revisar lista de precio, depósito o cargar DUX_CODIGO_ITEM con un producto válido. "
+                    "Si también activaste DUX_REQUIRE_STOCK_FOR_TEST_ITEM=1, puede no haber stock disponible."
+                )
+
             codigo_item = extract_codigo_item(item)
 
         if not codigo_item:
@@ -587,15 +709,15 @@ def main() -> None:
             )
 
         base_price_raw = extract_price(item)
-        try:
-            base_price = float(base_price_raw) if base_price_raw is not None else None
-        except Exception:
-            base_price = None
+        base_price = to_float(base_price_raw)
 
         log("ITEM BASE PARA PRUEBAS", {
             "codigo_item": codigo_item,
             "precio_detectado": base_price_raw,
+            "precio_detectado_float": base_price,
             "stock_detectado": extract_stock(item),
+            "stock_disponible_detectado": extract_stock_available(item),
+            "require_stock": require_stock,
             "item": item,
         })
 
@@ -647,9 +769,6 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
-print("\nNO FUNCIONÓ NINGUNA VARIANTE")
-
 
 
 print("\nNO FUNCIONÓ NINGUNA VARIANTE")
