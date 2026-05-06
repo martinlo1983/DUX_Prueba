@@ -192,6 +192,45 @@ def extract_codigo_item(obj: Dict[str, Any]) -> Optional[str]:
 
 
 def extract_price(obj: Dict[str, Any]) -> Optional[Any]:
+    """
+    DUX devuelve el precio normalmente dentro de:
+
+        precios: [
+            {
+                "id": 52554,
+                "nombre": "TRANSFERENCIAS",
+                "precio": "11340.0"
+            }
+        ]
+
+    Antes buscábamos precio directo en la raíz del item, por eso devolvía None.
+    Esta función primero busca dentro de `precios` y luego mantiene los fallback
+    por si algún endpoint devuelve precio en otro formato.
+    """
+    if not isinstance(obj, dict):
+        return None
+
+    precios = obj.get("precios")
+    if isinstance(precios, list) and precios:
+        for precio_obj in precios:
+            if not isinstance(precio_obj, dict):
+                continue
+
+            value = pick_field(precio_obj, [
+                "precio",
+                "precioUnitario",
+                "precio_unitario",
+                "precioVenta",
+                "precio_venta",
+                "precioFinal",
+                "precio_final",
+                "precioConIva",
+                "precio_con_iva",
+            ])
+
+            if value not in [None, ""]:
+                return value
+
     return pick_field(obj, [
         "precio",
         "precioUnitario",
@@ -629,5 +668,7 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+
 
 print("\nNO FUNCIONÓ NINGUNA VARIANTE")
