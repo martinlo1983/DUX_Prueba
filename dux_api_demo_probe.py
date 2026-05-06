@@ -77,11 +77,8 @@ def make_headers() -> Dict[str, str]:
     if not DUX_TOKEN:
         raise RuntimeError("Falta DUX_TOKEN en secrets/env.")
 
-    # Si devuelve 401/403, probar cambiar por:
-    # {"token": DUX_TOKEN, ...}
-    # o {"X-API-Key": DUX_TOKEN, ...}
     return {
-        "Authorization": f"Bearer {DUX_TOKEN}",
+        "Authorization": DUX_TOKEN,
         "Accept": "application/json",
         "Content-Type": "application/json",
     }
