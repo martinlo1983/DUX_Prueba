@@ -741,22 +741,43 @@ def extract_order_number(order: Dict[str, Any]) -> Optional[Any]:
     ])
 
 
-def probe_order_detail(order_id: Any) -> Dict[str, Any]:
+def probe_order_detail(order_id: Any, id_empresa: Any, id_sucursal: Any) -> Dict[str, Any]:
     """
     DUX documenta /pedidos para listar, pero no queda claro el endpoint de detalle.
     Esta función prueba variantes típicas y deja todo en el log/artifact.
     Los errores 404/400 no cortan la corrida.
     """
+    # En la corrida anterior, /pedidos?idPedido=... respondió "Debe seleccionar la empresa".
+    # Por eso probamos primero variantes con idEmpresa y también con idSucursal.
     paths: List[Tuple[str, Optional[Dict[str, Any]]]] = [
-        ("/pedido", {"idPedido": order_id}),
-        ("/pedido", {"id_pedido": order_id}),
-        ("/pedido", {"id": order_id}),
+        # Variante más probable: mismo endpoint /pedidos, filtrando por empresa + pedido.
+        ("/pedidos", {"idEmpresa": id_empresa, "idPedido": order_id}),
+        ("/pedidos", {"idEmpresa": id_empresa, "id_pedido": order_id}),
+        ("/pedidos", {"idEmpresa": id_empresa, "id": order_id}),
+
+        # Variante agregando sucursal, por si DUX exige ambas dimensiones.
+        ("/pedidos", {"idEmpresa": id_empresa, "idSucursal": id_sucursal, "idPedido": order_id}),
+        ("/pedidos", {"idEmpresa": id_empresa, "idSucursal": id_sucursal, "id_pedido": order_id}),
+        ("/pedidos", {"idEmpresa": id_empresa, "idSucursal": id_sucursal, "id": order_id}),
+
+        # Variantes por nroPedido / número, por si el id detectado no es el id técnico sino el número.
+        ("/pedidos", {"idEmpresa": id_empresa, "nroPedido": order_id}),
+        ("/pedidos", {"idEmpresa": id_empresa, "nro_pedido": order_id}),
+        ("/pedidos", {"idEmpresa": id_empresa, "numeroPedido": order_id}),
+        ("/pedidos", {"idEmpresa": id_empresa, "numero_pedido": order_id}),
+
+        # Endpoints alternativos menos probables, pero útiles para confirmar si existen.
+        ("/pedido", {"idEmpresa": id_empresa, "idPedido": order_id}),
+        ("/pedido", {"idEmpresa": id_empresa, "id_pedido": order_id}),
+        ("/pedido", {"idEmpresa": id_empresa, "id": order_id}),
+        ("/pedido/detalle", {"idEmpresa": id_empresa, "idPedido": order_id}),
+        ("/pedido/detalle", {"idEmpresa": id_empresa, "id_pedido": order_id}),
+        ("/pedido/detalle", {"idEmpresa": id_empresa, "id": order_id}),
+
+        # Variantes anteriores sin empresa, se dejan al final como control comparativo.
         ("/pedidos", {"idPedido": order_id}),
         ("/pedidos", {"id_pedido": order_id}),
         ("/pedidos", {"id": order_id}),
-        ("/pedido/detalle", {"idPedido": order_id}),
-        ("/pedido/detalle", {"id_pedido": order_id}),
-        ("/pedido/detalle", {"id": order_id}),
         (f"/pedido/{order_id}", None),
         (f"/pedidos/{order_id}", None),
     ]
@@ -771,6 +792,8 @@ def probe_order_detail(order_id: Any) -> Dict[str, Any]:
 
     log("PROBE DETALLE PEDIDO EXISTENTE", {
         "order_id": order_id,
+        "id_empresa": id_empresa,
+        "id_sucursal": id_sucursal,
         "resultados": results,
     })
     return results
@@ -811,7 +834,7 @@ def probe_existing_orders(id_empresa: Any, id_sucursal: Any) -> Dict[str, Any]:
             detail_results[f"pedido_{idx}_sin_id"] = {"pedido": order, "error": "No pude detectar id del pedido."}
             continue
 
-        detail_results[str(order_id)] = probe_order_detail(order_id)
+        detail_results[str(order_id)] = probe_order_detail(order_id, id_empresa=id_empresa, id_sucursal=id_sucursal)
 
     out["detalle_probe"] = detail_results
     return out
@@ -943,5 +966,7 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+
 
 
