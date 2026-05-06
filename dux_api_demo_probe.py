@@ -26,6 +26,12 @@ DUX_ID_DEPOSITO = os.getenv("DUX_ID_DEPOSITO", "").strip()
 DUX_CODIGO_ITEM = os.getenv("DUX_CODIGO_ITEM", "").strip()
 DUX_ID_LISTA_PRECIO = os.getenv("DUX_ID_LISTA_PRECIO", "").strip()
 
+# Valores de prueba recomendados para esta demo DUX.
+# Se pueden pisar desde GitHub Actions env/secrets si cambia el ambiente.
+DUX_PREFERRED_CODIGO_ITEM = os.getenv("DUX_PREFERRED_CODIGO_ITEM", "00000000000029").strip()
+DUX_PREFERRED_ID_DEPOSITO = os.getenv("DUX_PREFERRED_ID_DEPOSITO", "15998").strip()
+DUX_REQUIRE_STOCK_FOR_TEST_ITEM = os.getenv("DUX_REQUIRE_STOCK_FOR_TEST_ITEM", "1").strip() == "1"
+
 # En demo lo podés poner en 1 para crear pedidos.
 CREATE_TEST_PEDIDOS = os.getenv("DUX_CREATE_TEST_PEDIDOS", "0").strip() == "1"
 
@@ -233,94 +239,138 @@ def extract_stock(obj: Dict[str, Any]) -> Optional[Any]:
     ])
 
 
-def to_float(value: Any) -> Optional[float]:
-    """
-    Convierte valores numéricos que pueden venir como string desde DUX.
-    Soporta formatos simples tipo "11340.0" y "11.340,00".
-    """
+def parse_float(value: Any) -> Optional[float]:
     try:
         if value is None or value == "":
             return None
-        if isinstance(value, (int, float)):
-            return float(value)
-
-        s = str(value).strip()
-        if not s:
-            return None
-
-        # Si viene formato argentino/europeo: 11.340,00
-        if "," in s and "." in s:
-            s = s.replace(".", "").replace(",", ".")
-        elif "," in s:
-            s = s.replace(",", ".")
-
-        return float(s)
+        return float(str(value).replace(",", "."))
     except Exception:
         return None
 
 
-def extract_stock_available(obj: Dict[str, Any]) -> Optional[float]:
-    """
-    Intenta detectar stock disponible.
-    DUX normalmente devuelve:
-      "stock": [{"ctd_disponible": "19.0", "stock_disponible": "19.0", ...}]
-    """
+def item_price_value(obj: Optional[Dict[str, Any]]) -> Optional[float]:
+    if not obj:
+        return None
+    return parse_float(extract_price(obj))
+
+
+def item_stock_available_value(obj: Optional[Dict[str, Any]], id_deposito: Optional[Any] = None) -> Optional[float]:
     if not obj:
         return None
 
     stock = obj.get("stock")
-    if isinstance(stock, list) and stock:
-        first_stock = stock[0]
-        if isinstance(first_stock, dict):
-            for key in ["ctd_disponible", "stock_disponible", "disponible", "stock_real"]:
-                value = first_stock.get(key)
-                parsed = to_float(value)
-                if parsed is not None:
-                    return parsed
-
-    value = pick_field(obj, [
-        "ctd_disponible",
-        "stock_disponible",
-        "stock",
-        "saldoStock",
-        "saldo_stock",
-        "cantidadStock",
-        "cantidad_stock",
-        "disponible",
-    ])
-    return to_float(value)
-
-
-def find_valid_item_for_order(
-    items_result: Dict[str, Any],
-    require_stock: bool = False,
-) -> Optional[Dict[str, Any]]:
-    """
-    Selecciona un item apto para probar pedidos.
-
-    Antes el script usaba first_obj(items_result), lo cual tomaba el primer item
-    devuelto por DUX aunque tuviera precio 0. En la salida actual eso eligió
-    00000000000019 con precio 0, y por eso la prueba queda contaminada.
-
-    Criterio:
-      - precio detectado > 0 siempre
-      - stock disponible > 0 solo si require_stock=True
-    """
-    rows = as_list(items_result.get("response"))
-
-    for candidate in rows:
-        price = to_float(extract_price(candidate))
-        if price is None or price <= 0:
-            continue
-
-        if require_stock:
-            stock_available = extract_stock_available(candidate)
-            if stock_available is None or stock_available <= 0:
+    if isinstance(stock, list):
+        candidates = []
+        for row in stock:
+            if not isinstance(row, dict):
                 continue
 
-        return candidate
+            if id_deposito is not None:
+                row_id = row.get("id") or row.get("id_deposito") or row.get("idDeposito")
+                if str(row_id) != str(id_deposito):
+                    continue
 
-    return None
+            for key in ["stock_disponible", "ctd_disponible", "stockDisponible", "disponible", "stock_real"]:
+                value = parse_float(row.get(key))
+                if value is not None:
+                    candidates.append(value)
+                    break
+
+        if candidates:
+            return max(candidates)
+
+    flat = extract_stock(obj)
+    return parse_float(flat)
+
+
+def is_valid_test_item(obj: Optional[Dict[str, Any]], id_deposito: Optional[Any] = None) -> bool:
+    if not obj:
+        return False
+
+    price = item_price_value(obj)
+    if price is None or price <= 0:
+        return False
+
+    if DUX_REQUIRE_STOCK_FOR_TEST_ITEM:
+        stock = item_stock_available_value(obj, id_deposito)
+        if stock is None or stock <= 0:
+            return False
+
+    return True
+
+
+def choose_deposito(depositos: List[Dict[str, Any]]) -> Tuple[Optional[Any], Optional[Dict[str, Any]], str]:
+    if DUX_ID_DEPOSITO:
+        wanted = DUX_ID_DEPOSITO
+        source = "DUX_ID_DEPOSITO"
+    else:
+        wanted = DUX_PREFERRED_ID_DEPOSITO
+        source = "DUX_PREFERRED_ID_DEPOSITO"
+
+    preferred = None
+    if wanted:
+        preferred = next(
+            (
+                d for d in depositos
+                if str(extract_id(d, ["idDeposito", "id_deposito", "id"])) == str(wanted)
+            ),
+            None,
+        )
+
+    if preferred:
+        return extract_id(preferred, ["idDeposito", "id_deposito", "id"]), preferred, source
+
+    if depositos:
+        first = depositos[0]
+        return extract_id(first, ["idDeposito", "id_deposito", "id"]), first, "primer_deposito_fallback"
+
+    return None, None, "no_deposito"
+
+
+def choose_test_item(
+    id_lista: Any,
+    id_deposito: Any,
+    items_result: Dict[str, Any],
+) -> Tuple[Dict[str, Any], str]:
+    """
+    Selecciona el producto de prueba evitando el falso positivo del primer item con precio 0/stock 0.
+
+    Orden:
+    1) DUX_CODIGO_ITEM, si está cargado.
+    2) DUX_PREFERRED_CODIGO_ITEM, por defecto 00000000000029.
+    3) Primer item de la respuesta inicial que tenga precio > 0 y, si se exige, stock > 0.
+    """
+    candidates_codes = []
+    if DUX_CODIGO_ITEM:
+        candidates_codes.append(("DUX_CODIGO_ITEM", DUX_CODIGO_ITEM))
+    if DUX_PREFERRED_CODIGO_ITEM and DUX_PREFERRED_CODIGO_ITEM not in [c for _, c in candidates_codes]:
+        candidates_codes.append(("DUX_PREFERRED_CODIGO_ITEM", DUX_PREFERRED_CODIGO_ITEM))
+
+    for source, code in candidates_codes:
+        res = get_items(id_lista=id_lista, id_deposito=id_deposito, codigo_item=code, limit=5)
+        item = first_obj(res)
+        if item and is_valid_test_item(item, id_deposito):
+            return item, source
+
+        log("ITEM PREFERIDO NO VÁLIDO PARA PEDIDO", {
+            "source": source,
+            "codigo_item": code,
+            "encontrado": bool(item),
+            "precio_detectado": extract_price(item) if item else None,
+            "stock_detectado": item_stock_available_value(item, id_deposito) if item else None,
+            "require_stock": DUX_REQUIRE_STOCK_FOR_TEST_ITEM,
+            "nota": "No se usa para pedido porque precio <= 0, no tiene stock o no fue encontrado.",
+        })
+
+    initial_items = as_list(items_result.get("response"))
+    for item in initial_items:
+        if is_valid_test_item(item, id_deposito):
+            return item, "primer_item_valido_precio_stock"
+
+    raise RuntimeError(
+        "No encontré item válido para pedido. Revisar DUX_PREFERRED_CODIGO_ITEM, "
+        "DUX_PREFERRED_ID_DEPOSITO, lista de precios, stock o poner DUX_REQUIRE_STOCK_FOR_TEST_ITEM=0."
+    )
 
 
 def get_basic_resources() -> Dict[str, Any]:
@@ -363,14 +413,11 @@ def autodetect_ids(results: Dict[str, Any]) -> Dict[str, Any]:
 
         detected["id_sucursal_empresa"] = sucursal_id
 
-    deposito_id = DUX_ID_DEPOSITO
-    if not deposito_id:
-        dep = first_obj(results.get("depositos", {}))
-        if dep:
-            deposito_id = extract_id(dep, ["idDeposito", "id_deposito", "id"])
-            detected["deposito_obj"] = dep
-
+    depositos = as_list(results.get("depositos", {}).get("response"))
+    deposito_id, deposito_obj, deposito_source = choose_deposito(depositos)
     detected["id_deposito"] = deposito_id
+    detected["deposito_obj"] = deposito_obj
+    detected["deposito_source"] = deposito_source
 
     lista_id = DUX_ID_LISTA_PRECIO
     listas = as_list(results.get("listas_precio", {}).get("response"))
@@ -536,6 +583,15 @@ def build_order_product_variants(codigo_item: str, base_price: Optional[float]) 
                 "porcentaje_descuento": discount,
             }
         ),
+        (
+            "cod_item_precio_10000_descuentoPorcentaje",
+            {
+                "cod_item": codigo_item,
+                "cantidad": 1,
+                "precio": custom_price,
+                "descuentoPorcentaje": discount,
+            }
+        ),
     ])
 
     return variants
@@ -658,66 +714,33 @@ def main() -> None:
         if not id_lista:
             raise RuntimeError("No pude detectar id_lista_precio. Cargá DUX_ID_LISTA_PRECIO.")
 
-        codigo_item = DUX_CODIGO_ITEM
-
-        # Trae items con la lista/deposito detectados.
-        # Si DUX_CODIGO_ITEM está vacío, no usamos el primer item a ciegas:
-        # buscamos uno con precio > 0 para no probar pedidos con un producto inválido.
-        items_result = get_items(
-            id_lista=id_lista,
-            id_deposito=id_deposito,
-            codigo_item=codigo_item or None,
-            limit=50,
-        )
+        # Trae items con la lista/deposito elegidos. Se usa limit 50 para tener margen,
+        # pero el item de pedido se selecciona con choose_test_item(), no con items[0].
+        items_result = get_items(id_lista=id_lista, id_deposito=id_deposito, codigo_item=None, limit=50)
         all_results["items_result"] = items_result
 
-        require_stock = os.getenv("DUX_REQUIRE_STOCK_FOR_TEST_ITEM", "0").strip() == "1"
+        item, item_source = choose_test_item(
+            id_lista=id_lista,
+            id_deposito=id_deposito,
+            items_result=items_result,
+        )
 
-        if codigo_item:
-            # Si el usuario fuerza un código por secret/env, respetamos ese código,
-            # pero validamos que tenga precio mayor a cero.
-            item = first_obj(items_result)
-            if not item:
-                raise RuntimeError(
-                    f"No encontré el item forzado por DUX_CODIGO_ITEM={codigo_item}. "
-                    "Revisar código, lista de precio, depósito o filtros."
-                )
-
-            forced_price = to_float(extract_price(item))
-            if forced_price is None or forced_price <= 0:
-                raise RuntimeError(
-                    f"El item forzado por DUX_CODIGO_ITEM={codigo_item} tiene precio inválido "
-                    f"para la lista/deposito detectados: {extract_price(item)}. "
-                    "Cambiá DUX_CODIGO_ITEM por un producto con precio > 0 o dejalo vacío "
-                    "para que el script lo autodetecte."
-                )
-        else:
-            item = find_valid_item_for_order(items_result, require_stock=require_stock)
-
-            if not item:
-                raise RuntimeError(
-                    "No encontré un item con precio > 0 para probar. "
-                    "Revisar lista de precio, depósito o cargar DUX_CODIGO_ITEM con un producto válido. "
-                    "Si también activaste DUX_REQUIRE_STOCK_FOR_TEST_ITEM=1, puede no haber stock disponible."
-                )
-
-            codigo_item = extract_codigo_item(item)
-
+        codigo_item = extract_codigo_item(item)
         if not codigo_item:
             raise RuntimeError(
                 "Encontré item pero no pude detectar código de item. Revisar respuesta en artifact."
             )
 
         base_price_raw = extract_price(item)
-        base_price = to_float(base_price_raw)
+        base_price = item_price_value(item)
 
         log("ITEM BASE PARA PRUEBAS", {
+            "source": item_source,
             "codigo_item": codigo_item,
             "precio_detectado": base_price_raw,
-            "precio_detectado_float": base_price,
-            "stock_detectado": extract_stock(item),
-            "stock_disponible_detectado": extract_stock_available(item),
-            "require_stock": require_stock,
+            "stock_disponible_detectado": item_stock_available_value(item, id_deposito),
+            "id_deposito_usado": id_deposito,
+            "require_stock": DUX_REQUIRE_STOCK_FOR_TEST_ITEM,
             "item": item,
         })
 
@@ -771,4 +794,3 @@ if __name__ == "__main__":
     main()
 
 
-print("\nNO FUNCIONÓ NINGUNA VARIANTE")
