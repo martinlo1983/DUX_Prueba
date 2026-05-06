@@ -193,41 +193,19 @@ def extract_codigo_item(obj: Dict[str, Any]) -> Optional[str]:
 
 def extract_price(obj: Dict[str, Any]) -> Optional[Any]:
     """
-    DUX devuelve el precio normalmente dentro de:
+    DUX devuelve el precio dentro de obj["precios"] como una lista:
+      "precios": [{"id": ..., "nombre": ..., "precio": "11340.0"}]
 
-        precios: [
-            {
-                "id": 52554,
-                "nombre": "TRANSFERENCIAS",
-                "precio": "11340.0"
-            }
-        ]
-
-    Antes buscábamos precio directo en la raíz del item, por eso devolvía None.
-    Esta función primero busca dentro de `precios` y luego mantiene los fallback
-    por si algún endpoint devuelve precio en otro formato.
+    Dejamos también fallback por si algún endpoint devuelve precio plano.
     """
-    if not isinstance(obj, dict):
+    if not obj:
         return None
 
     precios = obj.get("precios")
     if isinstance(precios, list) and precios:
-        for precio_obj in precios:
-            if not isinstance(precio_obj, dict):
-                continue
-
-            value = pick_field(precio_obj, [
-                "precio",
-                "precioUnitario",
-                "precio_unitario",
-                "precioVenta",
-                "precio_venta",
-                "precioFinal",
-                "precio_final",
-                "precioConIva",
-                "precio_con_iva",
-            ])
-
+        first_price = precios[0]
+        if isinstance(first_price, dict):
+            value = first_price.get("precio")
             if value not in [None, ""]:
                 return value
 
@@ -389,82 +367,83 @@ def compare_stock_deposits(depositos: List[Dict[str, Any]], codigo_item: str, id
 
 def build_order_product_variants(codigo_item: str, base_price: Optional[float]) -> List[Tuple[str, Dict[str, Any]]]:
     """
-    Probamos distintos nombres de campos porque la documentación pública no muestra
-    el detalle interno de productos. En demo, esto sirve para aprender qué acepta.
+    Pruebas enfocadas en descubrir qué identificador de producto espera DUX
+    dentro de productos[] y si acepta precio/descuento enviado por API.
+
+    Hallazgo previo: DUX parece reconocer el campo "precio" porque respondió
+    "Debe ingresar un precio mayor a cero" cuando precio=0.
+    Por eso ahora probamos precio > 0 y varios nombres posibles para el código.
     """
-    variants = []
+    variants: List[Tuple[str, Dict[str, Any]]] = []
 
-    variants.append((
-        "solo_codigo_cantidad",
-        {
-            "codigoItem": codigo_item,
-            "cantidad": 1,
-        }
-    ))
+    try:
+        lista_price = float(base_price) if base_price is not None else 11340.0
+    except Exception:
+        lista_price = 11340.0
 
-    if base_price is not None:
-        final_price = float(TEST_FINAL_PRICE) if TEST_FINAL_PRICE else round(base_price * 0.95, 2)
-    else:
-        final_price = float(TEST_FINAL_PRICE) if TEST_FINAL_PRICE else 1.0
-
+    # Si cargás DUX_TEST_FINAL_PRICE como secret, pisa el valor de prueba.
+    # Si no, usamos 10000 para detectar si DUX respeta un precio distinto
+    # al precio de lista del producto 00000000000029 (11340 en la demo).
+    custom_price = float(TEST_FINAL_PRICE) if TEST_FINAL_PRICE else 10000.0
     discount = float(TEST_DISCOUNT)
 
     variants.extend([
         (
-            "precio_unitario_snake",
+            "cod_item_precio_10000",
             {
-                "codigoItem": codigo_item,
+                "cod_item": codigo_item,
                 "cantidad": 1,
-                "precio_unitario": final_price,
+                "precio": custom_price,
             }
         ),
         (
-            "precioUnitario_camel",
+            "codigo_item_precio_10000",
             {
-                "codigoItem": codigo_item,
+                "codigo_item": codigo_item,
                 "cantidad": 1,
-                "precioUnitario": final_price,
+                "precio": custom_price,
             }
         ),
         (
-            "precio",
+            "codigo_precio_10000",
             {
-                "codigoItem": codigo_item,
+                "codigo": codigo_item,
                 "cantidad": 1,
-                "precio": final_price,
+                "precio": custom_price,
             }
         ),
         (
-            "descuento",
+            "id_item_precio_10000",
             {
-                "codigoItem": codigo_item,
+                "id_item": codigo_item,
                 "cantidad": 1,
+                "precio": custom_price,
+            }
+        ),
+        (
+            "cod_item_precio_lista",
+            {
+                "cod_item": codigo_item,
+                "cantidad": 1,
+                "precio": lista_price,
+            }
+        ),
+        (
+            "cod_item_precio_10000_descuento",
+            {
+                "cod_item": codigo_item,
+                "cantidad": 1,
+                "precio": custom_price,
                 "descuento": discount,
             }
         ),
         (
-            "porcentaje_descuento",
+            "cod_item_precio_10000_porcentaje_descuento",
             {
-                "codigoItem": codigo_item,
+                "cod_item": codigo_item,
                 "cantidad": 1,
+                "precio": custom_price,
                 "porcentaje_descuento": discount,
-            }
-        ),
-        (
-            "descuentoPorcentaje_camel",
-            {
-                "codigoItem": codigo_item,
-                "cantidad": 1,
-                "descuentoPorcentaje": discount,
-            }
-        ),
-        (
-            "precio_y_descuento",
-            {
-                "codigoItem": codigo_item,
-                "cantidad": 1,
-                "precio_unitario": final_price,
-                "descuento": discount,
             }
         ),
     ])
@@ -668,6 +647,8 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+print("\nNO FUNCIONÓ NINGUNA VARIANTE")
 
 
 
