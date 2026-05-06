@@ -81,7 +81,7 @@ def make_headers() -> Dict[str, str]:
     # {"token": DUX_TOKEN, ...}
     # o {"X-API-Key": DUX_TOKEN, ...}
     return {
-        "token": DUX_TOKEN,
+        "token": "asd09",
         "Accept": "application/json",
         "Content-Type": "application/json",
     }
