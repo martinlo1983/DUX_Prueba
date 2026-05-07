@@ -626,35 +626,23 @@ def build_base_order(
     return {
         "fecha": today,
 
-        # IDs reales observados en pedido existente.
+        # IDs EXACTOS observados en pedido real existente.
         "id_empresa": 8112,
         "id_sucursal": 1,
-        "id_sucursal_empresa": "1",
         "id_cliente": 17577764,
         "id_personal": 12098903,
 
-        # Moneda observada en pedido existente.
+        # Moneda y cotizaciones.
         "id_moneda": 1,
-        "moneda": "ARS",
         "cotizacion_moneda": 1.0,
-        "cotizacion_dolar": 1.0,
+        "cotizacion_dolar": 1411,
 
-        # Datos mínimos adicionales.
-        "referencia": ref,
-        "id_deposito": safe_int(id_deposito) or id_deposito,
+        # IMPORTANTE:
+        # Se elimina toda la mezcla de datos manuales del cliente.
+        # También se elimina id_sucursal_empresa.
+        # Objetivo: replicar lo más parecido posible al pedido real.
 
-        # Mantengo datos de cliente por compatibilidad.
-        "apellido_razon_social": "ORTIZ, MICAELA",
-        "nombre": "MICAELA",
-        "categoria_fiscal": "CONSUMIDOR_FINAL",
-        "tipo_doc": "DNI",
-        "nro_doc": 11111111,
-        "telefono": "0000000000",
-        "email": "demo.api@example.com",
-        "domicilio": "DOMICILIO DEMO API",
-
-        # IMPORTANTE: mantener el nombre 'productos'
-        # porque ya dejó de responder 'Debe ingresar al menos un producto'.
+        # Mantener nombre 'productos' porque DUX ya reconoció el array.
         "productos": [producto],
     }
 
