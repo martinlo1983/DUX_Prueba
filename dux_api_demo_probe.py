@@ -634,6 +634,7 @@ def build_base_order(
 
         # Campo requerido explícitamente por DUX.
         "apellido_razon_social": "ORTIZ, MICAELA",
+        "categoria_fiscal": "CONSUMIDOR_FINAL",
 
         # Moneda y cotizaciones.
         "id_moneda": 1,
