@@ -632,6 +632,9 @@ def build_base_order(
         "id_cliente": 17577764,
         "id_personal": 12098903,
 
+        # Campo requerido explícitamente por DUX.
+        "apellido_razon_social": "ORTIZ, MICAELA",
+
         # Moneda y cotizaciones.
         "id_moneda": 1,
         "cotizacion_moneda": 1.0,
@@ -970,6 +973,7 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
 
 
 
