@@ -605,23 +605,56 @@ def build_base_order(
     producto: Dict[str, Any],
     referencia_suffix: str,
 ) -> Dict[str, Any]:
+    """
+    Construcción de pedido usando exactamente los ids observados
+    en un pedido REAL existente de DUX.
+
+    Pedido observado:
+      id_cliente = 17577764
+      id_personal = 12098903
+      id_empresa = 8112
+      id_sucursal = 1
+      id_moneda = 1
+
+    Objetivo:
+    eliminar variables de cliente/sucursal/persona inexistentes
+    y acercarnos al payload real que DUX ya acepta.
+    """
     today = datetime.now().strftime("%d%m%Y")
     ref = f"PRUEBA API {referencia_suffix}"[:100]
 
     return {
         "fecha": today,
-        "id_empresa": safe_int(id_empresa) or id_empresa,
-        "id_sucursal_empresa": str(id_sucursal),
-        "apellido_razon_social": "CLIENTE DEMO API",
-        "nombre": "PRUEBA",
+
+        # IDs reales observados en pedido existente.
+        "id_empresa": 8112,
+        "id_sucursal": 1,
+        "id_sucursal_empresa": "1",
+        "id_cliente": 17577764,
+        "id_personal": 12098903,
+
+        # Moneda observada en pedido existente.
+        "id_moneda": 1,
+        "moneda": "ARS",
+        "cotizacion_moneda": 1.0,
+        "cotizacion_dolar": 1.0,
+
+        # Datos mínimos adicionales.
+        "referencia": ref,
+        "id_deposito": safe_int(id_deposito) or id_deposito,
+
+        # Mantengo datos de cliente por compatibilidad.
+        "apellido_razon_social": "ORTIZ, MICAELA",
+        "nombre": "MICAELA",
         "categoria_fiscal": "CONSUMIDOR_FINAL",
         "tipo_doc": "DNI",
         "nro_doc": 11111111,
         "telefono": "0000000000",
         "email": "demo.api@example.com",
         "domicilio": "DOMICILIO DEMO API",
-        "referencia": ref,
-        "id_deposito": safe_int(id_deposito) or id_deposito,
+
+        # IMPORTANTE: mantener el nombre 'productos'
+        # porque ya dejó de responder 'Debe ingresar al menos un producto'.
         "productos": [producto],
     }
 
