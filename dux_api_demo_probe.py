@@ -629,6 +629,7 @@ def build_base_order(
         # IDs EXACTOS observados en pedido real existente.
         "id_empresa": 8112,
         "id_sucursal": 1,
+        "id_sucursal_empresa": 1,
         "id_cliente": 17577764,
         "id_personal": 12098903,
 
