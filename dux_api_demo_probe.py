@@ -53,6 +53,10 @@ TEST_ID_MONEDA = os.getenv("DUX_TEST_ID_MONEDA", "1").strip()
 
 ARTIFACT_JSON = "dux_demo_probe_results.json"
 
+# Modo rápido para debug de creación de pedidos.
+# Mantiene el delay recomendado por DUX, pero reduce la cantidad de requests.
+FAST_ORDER_DEBUG = os.getenv("DUX_FAST_ORDER_DEBUG", "0").strip() == "1"
+
 
 def safe_int(value: Any) -> Optional[int]:
     try:
@@ -328,13 +332,20 @@ def choose_deposito(depositos: List[Dict[str, Any]]) -> Tuple[Optional[Any], Opt
 def get_basic_resources() -> Dict[str, Any]:
     results = {}
 
-    endpoints = {
-        "empresas": ("/empresas", None),
-        "depositos": ("/deposito", None),
-        "listas_precio": ("/listaprecioventa", None),
-        "rubros": ("/rubros", {"offset": 0, "limit": 20}),
-        "subrubros": ("/subrubros", {"offset": 0, "limit": 20}),
-    }
+    if FAST_ORDER_DEBUG:
+        endpoints = {
+            "empresas": ("/empresas", None),
+            "depositos": ("/deposito", None),
+            "listas_precio": ("/listaprecioventa", None),
+        }
+    else:
+        endpoints = {
+            "empresas": ("/empresas", None),
+            "depositos": ("/deposito", None),
+            "listas_precio": ("/listaprecioventa", None),
+            "rubros": ("/rubros", {"offset": 0, "limit": 20}),
+            "subrubros": ("/subrubros", {"offset": 0, "limit": 20}),
+        }
 
     for name, (path, params) in endpoints.items():
         results[name] = request_dux("GET", path, params=params)
@@ -628,10 +639,11 @@ def build_base_order(
 
         # IDs EXACTOS observados en pedido real existente.
         "id_empresa": 8112,
-        "id_sucursal": 1,
         "id_sucursal_empresa": 1,
         "id_cliente": 17577764,
         "id_personal": 12098903,
+        "id_deposito": 15998,
+        "id_lista_precio_venta": 52554,
 
         # Campo requerido explícitamente por DUX.
         "apellido_razon_social": "ORTIZ, MICAELA",
@@ -932,10 +944,15 @@ def main() -> None:
         lists = as_list(basic.get("listas_precio", {}).get("response"))
         deps = as_list(basic.get("depositos", {}).get("response"))
 
-        all_results["compare_price_lists"] = compare_price_lists(lists, codigo_item, id_deposito)
-        all_results["compare_stock_deposits"] = compare_stock_deposits(deps, codigo_item, id_lista)
-
-        all_results["existing_orders_probe"] = probe_existing_orders(id_empresa, id_sucursal)
+        if FAST_ORDER_DEBUG:
+            log("FAST ORDER DEBUG", "Se omiten comparaciones de listas, depósitos y probe de pedidos existentes.")
+            all_results["compare_price_lists"] = {}
+            all_results["compare_stock_deposits"] = {}
+            all_results["existing_orders_probe"] = {}
+        else:
+            all_results["compare_price_lists"] = compare_price_lists(lists, codigo_item, id_deposito)
+            all_results["compare_stock_deposits"] = compare_stock_deposits(deps, codigo_item, id_lista)
+            all_results["existing_orders_probe"] = probe_existing_orders(id_empresa, id_sucursal)
 
         all_results["created_orders"] = create_test_orders(
             id_empresa=id_empresa,
@@ -945,7 +962,11 @@ def main() -> None:
             base_price=base_price,
         )
 
-        all_results["recent_demo_orders"] = consult_recent_orders(id_empresa, id_sucursal)
+        if FAST_ORDER_DEBUG:
+            all_results["recent_demo_orders"] = {}
+            log("FAST ORDER DEBUG", "Se omite consulta final de pedidos recientes.")
+        else:
+            all_results["recent_demo_orders"] = consult_recent_orders(id_empresa, id_sucursal)
 
         with open(ARTIFACT_JSON, "w", encoding="utf-8") as f:
             json.dump(all_results, f, ensure_ascii=False, indent=2, default=str)
@@ -975,7 +996,6 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
 
 
 
