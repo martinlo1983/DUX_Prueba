@@ -26,6 +26,7 @@ jobs:
       - name: Run DUX demo probe
         env:
           DUX_TOKEN: ${{ secrets.DUX_TOKEN }}
+          DUX_FAST_ORDER_DEBUG: "1"
 
           # Opcionales. Si no los cargás, el script intenta autodetectar.
           DUX_ID_EMPRESA: ${{ secrets.DUX_ID_EMPRESA }}
